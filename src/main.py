@@ -24,66 +24,84 @@ db.init_app(app)
 CORS(app)
 setup_admin(app)
 
+#Replace swapi url to localhost
 def swapi_to_localhost(swapi_url):
-    return swapi_url.replace("https://www.swapi.tech/api/", "http://localhost:3010/")
+    return swapi_url.replace("https://www.swapi.tech/api/", "http://localhost:3000/")
+
+# Handle/serialize errors like a JSON object
+@app.errorhandler(APIException)
+def handle_invalid_usage(error):
+    return jsonify(error.to_dict()), error.status_code
+
+
+#Register new user
+@app.route('/signup', methods=['POST'])
+def create_new_user():
+    user_data = request.json
+    user = User.create(user_data)
+    if user is not None:
+        print(user)
+        return jsonify({"message":"User create correctly!"}), 201
+    else:
+        return jsonify({"message":"Can't create user. Try again!"}), 500
+
+#Create token for user
+@app.route('/login', methods=['POST'])
+def user_login():
+    email = request.json.get('email', None)
+    password = request.json.get('password', None)
+    print(request.json)
+    user = User.query.filter_by(email=email, password=password).one_or_none()
+    #user.email != "test@test.com" or user.password != "test"
+    if user is None:
+        # No se encontro el usuario
+        return jsonify({"msg": "Something went wrong, please try again!"}), 401
+    
+    # crea un token el id del usuario
+    access_token = create_access_token(identity=user.id)
+    return jsonify({ "token": access_token, "user_id": user.id, "username": user.username })
 
 # generate sitemap with all your endpoints
 @app.route('/')
 def sitemap():
     return generate_sitemap(app)
 
-#Obtain all users
-
-@app.route('/users', methods=['GET'])
-def handle_get_users():
-    users = User.query.all()
-    response = []
-    for user in users:
-        response.append(user.serialize())
+#Get data about the user
+@app.route('/users', methods=['GET','POST'])
+def handle_users():
+    if request.method == "GET":
+        users = User.query.all()
+        print(users)
+        response = []
+        for user in users:
+            response.append(user.serialize())
+        print(response)
         return jsonify(response), 200
-    return jsonify(response), 200
-
-#Create a new user
-
-@app.route('/users', methods=['POST'])
-def handle_new_user():
+    #Obtengo los datos del cuerpo de la solicitud
     body = request.json
-    user_object = User.create(body)
-    if user_object is not None:
-        return jsonify(user_object.serialize()), 201
-    return jsonify({"message": "Something went wrong, try again"}), 400
+    #Crear el usuario
+    object_usuario = User.create(body)
+    if object_usuario is not None:
+        return jsonify(object_usuario.serialize()), 201
+    return jsonify({"message":"Something happen, try again!"}), 400
 
-#Login endpoint
 
-@app.route('/login', methods=['POST'])
-def handle_login():
-    email = request.json.get('email', None)
-    password = request.json.get('password', None)
-    user = User.query.filter_by(email= email, password = password).one_or_none()
-    if user is None:
-        return jsonify({"message": "Something went wrong, try again"}), 401
-    else:
-        token= create_access_token(identity=user.id)
-        return jsonify({"username": user.username, "token": token, "id": user.id})
-
-#Get all favorites of a user
-
+#Get all favorites for a user
 @app.route('/favorites', methods=['GET'])
 @jwt_required()
-def handle_user_favorite():
+def get_user_favorites():
     user_id = get_jwt_identity()
-    favorites = Favorite.query.filter_by(user_id = user_id)
+    favorites = Favorite.query.filter_by(user_id=user_id)
     response = list(map(
         lambda favorite: favorite.serialize(),
         favorites
     ))
     return jsonify(response), 200
 
-#Create a favorite for an user
-
+#Create a favorite for a user
 @app.route('/favorites/<string:nature>', methods=['POST'])
 @jwt_required()
-def handle_favorite_user(nature):
+def handle_users_favorite(nature):
     uid = request.json['uid']
     name = request.json['name']
     new_favorite = Favorite(
@@ -91,25 +109,33 @@ def handle_favorite_user(nature):
         name = name,
         url = f"https://www.swapi.tech/api/{nature}/{uid}"
     )
-    if new_favorite.new is True:
+    db.session.add(new_favorite)
+    try:
+        db.session.commit()
         return jsonify(new_favorite.serialize()), 201
-    return jsonify({"message": "error"})
+    except Exception as error:
+        db.session.rollback()
+        return jsonify(error.args), 500
 
-#Delete favorite
-
+#Delete a favorite
 @app.route('/favorites/<int:favorite_id>', methods=['DELETE'])
-def handle_delete_favorite(favorite_id):
-    favorite = Favorite.query.filter_by(id = favorite_id).one_or_one()
+def delete_favorite(favorite_id):
+    #Consultar la bd para verificar la existencia de un favorito 
+    # y si existe, lo eliminamos.
+    #favorite = Favorite.query.filter_by(id=favorite_id).first()
+    favorite = Favorite.query.filter_by(id=favorite_id).one_or_none()
     if favorite is None:
-        return jsonify({"message": "favorite not found"}), 404
+        return jsonify({"message":"not found"}), 404
     deleted = favorite.delete()
     if deleted == False:
-        return jsonify({"message":"Something went wrong, try again"}), 500
+        return jsonify({"message":"Something happen try again"}), 500
+    #favorite = Favorite.query.get(favorite_id)
+    #favorite = Favorite.query.filter(id==favorite_id).one_or_none()
+    #Devolver un cuerpo vacio con status code 204, si borra con exito.
     return jsonify([]), 204
 
 #Get all people
-
-@app.route('/peoples', methods=['GET'])
+@app.route('/people', methods=['GET'])
 def handle_people():
     limit = request.args.get("limit", 10)
     page = request.args.get("page", 1)
@@ -121,36 +147,42 @@ def handle_people():
     )
     return jsonify(response), 200
 
-#Get all planets
-
+#Get info about all planets
 @app.route('/planets', methods=['GET'])
-def hanfle_planets():
+def handle_planets():
+    # Consultar la API de StarWars para obtener la información de los planetas
     response = requests.get(f"https://www.swapi.tech/api/planets?page=1&limit=1000")
     response = response.json()
-    results = response['results']
-    for result in results:
-        result.update(
-        url= swapi_to_localhost(result['url'])
-        )
-    return jsonify(results), 200
-
-#Get all vehicles
-
-@app.route('/vehicles', methods=['GET'])
-def handle_vehicles():
-    response = requests.get(f"https://www.swapi.tech/api/vehicles?page=1&limit=1000")
-    response = response.json()
+    #print(response['results'])
     results = response['results']
     for result in results:
         result.update(
             url = swapi_to_localhost(result['url'])
         )
+        #result['url'] = swapi_to_localhost(result['url'])
+      # Devolver la lista de diccionarios que representasn a los planetas
     return jsonify(results), 200
 
-#Get info of one planet
+#Get info about all vehicles
+@app.route('/vehicles', methods=['GET'])
+def handle_vehicles():
+    # Consultar la API de StarWars para obtener la información de los vehiculos
+    response = requests.get(f"https://www.swapi.tech/api/vehicles?page=1&limit=1000")
+    response = response.json()
+    #print(response['results'])
+    results = response['results']
+    for result in results:
+        result.update(
+            url = swapi_to_localhost(result['url'])
+        )
+        #result['url'] = swapi_to_localhost(result['url'])
+      # Devolver la lista de diccionarios que representasn a los planetas
+    return jsonify(results), 200
 
+#Get info about one planet
 @app.route('/planets/<int:planet_id>', methods=['GET'])
 def handle_one_planet(planet_id):
+    #Consultar la API con un planeta en especifico
     response = requests.get(f"https://www.swapi.tech/api/planets/{planet_id}")
     body = response.json()
     if response.status_code == 200:
@@ -158,42 +190,46 @@ def handle_one_planet(planet_id):
         planet['properties'].update(
             url = swapi_to_localhost(planet['properties']['url'])
         )
+        #Devolver la informacion de un planeta en especifico
         return jsonify(planet), 200
     else:
-        return jsonify(body), response.status.code
-
-#Get info of one people
-
-@app.route('/peoples/<int:people_id>', methods=['GET'])
+        return jsonify(body), response.status_code
+        
+#Get info about one people
+@app.route('/people/<int:people_id>', methods=['GET'])
 def handle_one_people(people_id):
+    #Consultar la API con un planeta en especifico
     response = requests.get(f"https://www.swapi.tech/api/people/{people_id}")
     body = response.json()
     if response.status_code == 200:
         people = body['result']
-        people = ['properties'].update(
+        people['properties'].update(
             url = swapi_to_localhost(people['properties']['url'])
         )
+        #Devolver la informacion de un planeta en especifico
         return jsonify(people), 200
     else:
         return jsonify(body), response.status_code
 
-#Get info of one vehicle
-
+#Get info about one vehicle
 @app.route('/vehicles/<int:vehicle_id>', methods=['GET'])
 def handle_one_vehicle(vehicle_id):
+    #Consultar la API con un planeta en especifico
     response = requests.get(f"https://www.swapi.tech/api/vehicles/{vehicle_id}")
     body = response.json()
     if response.status_code == 200:
         vehicle = body['result']
         vehicle['properties'].update(
-            url= swapi_to_localhost(vehicle['properties']['url'])
+            url = swapi_to_localhost(vehicle['properties']['url'])
         )
+        #Devolver la informacion de un planeta en especifico
         return jsonify(vehicle), 200
     else:
         return jsonify(body), response.status_code
 
+#@app.route("/favorites/", methods=[''])
 
-
+# this only runs if `$ python src/main.py` is executed
 if __name__ == '__main__':
     PORT = int(os.environ.get('PORT', 3000))
     app.run(host='0.0.0.0', port=PORT, debug=False)
